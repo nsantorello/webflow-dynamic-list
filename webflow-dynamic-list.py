@@ -14,15 +14,21 @@ if len(sys.argv) < 2:
   sys.exit()
 
 remoteSiteUrl = sys.argv[1] 
-
-# Webflow constants
-dynamicListClass = 'w-dyn-list'
 localImagesDirectory = 'images/' 
 backgroundImagePattern = "background-image:\s*url\(\'(.*)\'\)"
 
 # Ensure images directory exists
 if not os.path.exists(localImagesDirectory):
     os.makedirs(localImagesDirectory)
+
+# Determine dynamic collections from detail pages
+def getCollectionName(filename):
+  reg = re.match('detail_(.*).html', filename)
+  return re.match('detail_(.*).html', filename).groups()[0]
+
+dynamicCollectionNames = map(getCollectionName, glob.glob('detail_*.html'))
+
+print 'Found ' + str(len(dynamicCollectionNames)) + ' dynamic collections: ' + ",".join(dynamicCollectionNames)
 
 def downloadImage(remoteUrl, localUrl):
   if remoteUrl.startswith('http') and not os.path.isfile(localUrl):
@@ -51,6 +57,32 @@ def processImageBackground(node):
 
   downloadImage(src, newImgSrc)
 
+def processDynamicPage(node):
+  # Ensure this node has a link that we are going to process
+  if 'href' not in node.attrib:
+    return
+
+  # Ensure the link is to a dynamic page
+  link = node.attrib['href']
+  collectionName = None
+  for name in dynamicCollectionNames:
+    if link.startswith('/' + name + '/'):
+      collectionName = name
+      break
+
+  if collectionName == None:
+    return
+
+  # Process the link -- remove leading forward slash, and replace slashes in the link with hyphens
+  #   because everything in the exported code from Webflow assumes things are in the same directory
+  newLink = link[1:].replace('/', '-') + '.html' # remove leading forward slash
+  node.attrib['href'] = newLink
+
+  if not os.path.isfile(newLink):
+    print ' - creating dynamic page: ' + link
+    copyfile('detail_' + collectionName + '.html', newLink)
+    replaceDynamicListsInFile(newLink, 'exported-dynamic-content', link)
+
 def replaceDynamicList(dynLists):
   # Download images inside of the remote dynamic list
   localDynamicList = dynLists[0]
@@ -58,10 +90,11 @@ def replaceDynamicList(dynLists):
 
   map(processImageTag, remoteDynamicList.findall('.//img'))
   map(processImageBackground, remoteDynamicList.xpath('.//*'))
+  map(processDynamicPage, remoteDynamicList.xpath('.//*'))
 
   localDynamicList.getparent().replace(localDynamicList, remoteDynamicList)  
 
-def replaceDynamicListsInFile(htmlFile):
+def replaceDynamicListsInFile(htmlFile, dynamicClass, computedRemoteUrl):
   print htmlFile
 
   # Ignore detail files
@@ -72,15 +105,15 @@ def replaceDynamicListsInFile(htmlFile):
   # Read local file to see if there is any dynamic content
   with open(htmlFile, 'r+') as localFile:
     localHtml = html.fromstring(localFile.read())
-    localDynamicLists = localHtml.find_class(dynamicListClass)
+    localDynamicLists = localHtml.find_class(dynamicClass)
     if len(localDynamicLists) == 0:
       print ' - no dynamic lists were found'
       return
 
-    remoteRelativeUrl = htmlFile[0:-5] if htmlFile != 'index.html' else ''
+    remoteRelativeUrl = computedRemoteUrl if computedRemoteUrl != None else htmlFile[0:-5] if htmlFile != 'index.html' else ''
     remotePageUrl = urlparse.urljoin(remoteSiteUrl, remoteRelativeUrl)
     remoteHtml = html.fromstring(urllib.urlopen(remotePageUrl).read())
-    remoteDynamicLists = remoteHtml.find_class(dynamicListClass)
+    remoteDynamicLists = remoteHtml.find_class(dynamicClass)
     if len(remoteDynamicLists) != len(localDynamicLists):
       print ' - error: number of dynamic lists does not match up with the remote version at: ' + remotePageUrl
       return
@@ -98,5 +131,7 @@ def replaceDynamicListsInFile(htmlFile):
 
     print ' - ' + str(len(remoteDynamicLists)) + ' dynamic list(s) processed'
 
-map(replaceDynamicListsInFile, glob.glob('*.html'))
+for globFile in glob.glob('*.html'):
+  replaceDynamicListsInFile(globFile, 'w-dyn-list', None)
+
 print 'Done processing dynamic data!'
